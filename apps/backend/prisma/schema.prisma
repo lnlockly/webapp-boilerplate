@@ -1,0 +1,266 @@
+// Prisma schema for SaaS web-app boilerplate.
+// Add new domain models below the auth/billing core.
+//
+// IMPORTANT: don't reshape core models (User/Org/Membership/Subscription/ApiKey)
+// without reading AGENTS.md — auth & billing wiring depend on them.
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------- Auth & Users ----------
+
+model User {
+  id            String   @id @default(cuid())
+  email         String   @unique
+  emailVerified DateTime?
+  passwordHash  String?
+  name          String?
+  avatarUrl     String?
+  role          GlobalRole @default(USER)
+  twoFactorEnabled Boolean @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  deletedAt     DateTime?
+
+  sessions      Session[]
+  memberships   Membership[]
+  apiKeys       ApiKey[]
+  oauthAccounts OAuthAccount[]
+  auditLogs     AuditLog[]
+  emailTokens   EmailToken[]
+
+  @@index([email])
+}
+
+enum GlobalRole {
+  USER
+  SUPERADMIN
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  userId       String
+  refreshHash  String   @unique
+  userAgent    String?
+  ip           String?
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  createdAt    DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model OAuthAccount {
+  id           String   @id @default(cuid())
+  userId       String
+  provider     String   // "google" | "github"
+  providerId   String
+  createdAt    DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerId])
+  @@index([userId])
+}
+
+model EmailToken {
+  id        String          @id @default(cuid())
+  userId    String
+  kind      EmailTokenKind
+  tokenHash String          @unique
+  expiresAt DateTime
+  consumedAt DateTime?
+  createdAt DateTime        @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+enum EmailTokenKind {
+  VERIFY_EMAIL
+  RESET_PASSWORD
+  MAGIC_LINK
+}
+
+// ---------- Multi-tenant orgs ----------
+
+model Org {
+  id            String   @id @default(cuid())
+  slug          String   @unique
+  name          String
+  logoUrl       String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  deletedAt     DateTime?
+
+  memberships   Membership[]
+  invitations   Invitation[]
+  apiKeys       ApiKey[]
+  subscription  Subscription?
+  invoices      Invoice[]
+  webhooks      Webhook[]
+}
+
+model Membership {
+  id        String   @id @default(cuid())
+  userId    String
+  orgId     String
+  role      OrgRole  @default(MEMBER)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  org  Org  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, orgId])
+  @@index([orgId])
+}
+
+enum OrgRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+model Invitation {
+  id        String   @id @default(cuid())
+  orgId     String
+  email     String
+  role      OrgRole  @default(MEMBER)
+  tokenHash String   @unique
+  invitedBy String
+  expiresAt DateTime
+  acceptedAt DateTime?
+  createdAt DateTime @default(now())
+
+  org Org @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId])
+  @@index([email])
+}
+
+// ---------- Billing ----------
+
+model PricingTier {
+  id           String   @id @default(cuid())
+  slug         String   @unique           // "free" | "pro" | "enterprise"
+  name         String
+  stripePriceId String?                   // null for free
+  monthlyCents Int      @default(0)
+  features     Json     @default("{}")    // { seats: 5, api_calls: 10000, ... }
+  active       Boolean  @default(true)
+  sortOrder    Int      @default(0)
+
+  subscriptions Subscription[]
+}
+
+model Subscription {
+  id                   String   @id @default(cuid())
+  orgId                String   @unique
+  tierId               String
+  status               SubscriptionStatus @default(ACTIVE)
+  stripeCustomerId     String?
+  stripeSubscriptionId String?
+  currentPeriodEnd     DateTime?
+  cancelAtPeriodEnd    Boolean  @default(false)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  org  Org         @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  tier PricingTier @relation(fields: [tierId], references: [id])
+
+  @@index([stripeCustomerId])
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  TRIALING
+  INCOMPLETE
+}
+
+model Invoice {
+  id             String   @id @default(cuid())
+  orgId          String
+  stripeInvoiceId String? @unique
+  amountCents    Int
+  currency       String   @default("usd")
+  status         String   // "paid" | "open" | "void"
+  hostedUrl      String?
+  pdfUrl         String?
+  createdAt      DateTime @default(now())
+
+  org Org @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId])
+}
+
+// ---------- API keys ----------
+
+model ApiKey {
+  id          String    @id @default(cuid())
+  userId      String
+  orgId       String?
+  name        String
+  prefix      String    // first 8 chars shown in UI
+  keyHash     String    @unique
+  scopes      String[]  // ["read", "write"]
+  lastUsedAt  DateTime?
+  expiresAt   DateTime?
+  revokedAt   DateTime?
+  createdAt   DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  org  Org? @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([orgId])
+}
+
+// ---------- Webhooks (outbound) ----------
+
+model Webhook {
+  id        String   @id @default(cuid())
+  orgId     String
+  url       String
+  secret    String
+  events    String[] // ["invoice.paid", "user.created", ...]
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  org Org @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId])
+}
+
+// ---------- Audit log ----------
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  orgId     String?
+  action    String   // "user.login" | "org.invite" | "billing.upgrade" | ...
+  target    String?
+  metadata  Json     @default("{}")
+  ip        String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([orgId])
+  @@index([action])
+  @@index([createdAt])
+}
