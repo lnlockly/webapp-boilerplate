@@ -8,7 +8,7 @@ export interface AuthedUser {
   orgId?: string | null;
 }
 
-export const CurrentUser = createParamDecorator<unknown, ExecutionContext, AuthedUser | undefined>(
+export const CurrentUser = createParamDecorator(
   (_data, ctx) => {
     const req = ctx.switchToHttp().getRequest<Request & { user?: AuthedUser }>();
     return req.user;

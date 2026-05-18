@@ -13,7 +13,7 @@ export class TokenService {
   constructor(private readonly jwt: JwtService) {}
 
   signAccess(claims: AccessClaims): Promise<string> {
-    return this.jwt.signAsync(claims, { expiresIn: process.env.JWT_ACCESS_TTL ?? '15m' });
+    return this.jwt.signAsync(claims, { expiresIn: 900 });
   }
 
   verifyAccess(token: string): Promise<AccessClaims> {
